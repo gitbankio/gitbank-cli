@@ -242,10 +242,10 @@ gitbank mcp config     # Copy output to claude_desktop_config.json
 The full TypeScript SDK is available separately:
 
 ```bash
-npm install @gitbank/sdk
+npm install @gitbank-agent/sdk
 ```
 
-See [@gitbank/sdk on npm](https://www.npmjs.com/package/@gitbank/sdk) for the complete API reference.
+See [@gitbank-agent/sdk on npm](https://www.npmjs.com/package/@gitbank-agent/sdk) for the complete API reference.
 
 ---
 
