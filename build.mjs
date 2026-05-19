@@ -1,0 +1,37 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { build as esbuild } from "esbuild";
+import { rm } from "node:fs/promises";
+
+const artifactDir = path.dirname(fileURLToPath(import.meta.url));
+
+async function buildAll() {
+  const distDir = path.resolve(artifactDir, "dist");
+  await rm(distDir, { recursive: true, force: true });
+
+  await esbuild({
+    entryPoints: [path.resolve(artifactDir, "src/index.ts")],
+    platform: "node",
+    bundle: true,
+    format: "esm",
+    outfile: path.resolve(distDir, "cli.mjs"),
+    logLevel: "info",
+    external: ["*.node"],
+    sourcemap: "linked",
+    conditions: ["workspace"],
+    banner: {
+      js: `import { createRequire as __crReq } from 'node:module';
+import __path from 'node:path';
+import __url from 'node:url';
+globalThis.require = __crReq(import.meta.url);
+globalThis.__filename = __url.fileURLToPath(import.meta.url);
+globalThis.__dirname = __path.dirname(globalThis.__filename);
+`,
+    },
+  });
+}
+
+buildAll().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

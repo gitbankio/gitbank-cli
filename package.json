@@ -1,0 +1,39 @@
+{
+  "name": "gitbank",
+  "version": "0.1.1",
+  "description": "CLI for Gitbank — manage Web3 GitVaults, deposit/withdraw/swap tokens on Base L2, run bounty projects, and interact with Gitlawb decentralized git and AI agents from your terminal.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Gitbank <hello@gitbank.io>",
+  "homepage": "https://gitbank.io",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gitbankio/gitbank-cli"
+  },
+  "bugs": {
+    "url": "https://github.com/gitbankio/gitbank-cli/issues"
+  },
+  "keywords": [
+    "gitbank", "cli", "web3", "base-l2", "ethereum", "github",
+    "vault", "bounty", "gitlawb", "did", "mcp", "openclaude", "agent"
+  ],
+  "files": ["dist/cli.mjs", "README.md", "LICENSE"],
+  "bin": { "gitbank": "./dist/cli.mjs" },
+  "engines": { "node": ">=18.0.0" },
+  "scripts": {
+    "build": "node ./build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "node --enable-source-maps ./dist/cli.mjs",
+    "prepublishOnly": "node ./build.mjs"
+  },
+  "dependencies": {
+    "@gitbank-agent/sdk": "^0.1.1",
+    "chalk": "^4.1.2",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "esbuild": "^0.27.0",
+    "typescript": "^5.0.0"
+  }
+}
