@@ -126,30 +126,40 @@ export function registerGitlawbCommands(program: Command): void {
       console.log();
       printDivider();
 
-      // ── Step 1: Install gl ──────────────────────────────────────────────
+      // ── Step 1: Install gl + git-remote-gitlawb ─────────────────────────
 
       step(1, "Install Gitlawb CLI (gl + git-remote-gitlawb)");
 
-      if (glAvailable()) {
+      const haveGl = glAvailable();
+      const haveRemote = gitRemoteAvailable();
+
+      if (haveGl && haveRemote) {
         const ver = glCapture(["--version"], node) ?? "installed";
         ok("gl is installed  (" + ver + ")");
-        if (!gitRemoteAvailable()) {
-          console.log(c.warn("  ! git-remote-gitlawb is not on PATH."));
-          info("Install it to enable git clone/push via DID transport:");
-          console.log("  " + c.accent("curl -fsSL https://gitlawb.com/install.sh | sh"));
-          console.log();
-        } else {
-          ok("git-remote-gitlawb is installed");
-        }
+        ok("git-remote-gitlawb is installed");
       } else {
-        console.log(c.warn("  gl is not installed. Install it now:"));
+        if (haveGl) {
+          const ver = glCapture(["--version"], node) ?? "installed";
+          ok("gl is installed  (" + ver + ")");
+          console.log(c.error("  ✗ git-remote-gitlawb is NOT installed."));
+        } else {
+          console.log(c.error("  ✗ gl is NOT installed."));
+        }
         console.log();
-        console.log("  " + c.accent("curl -fsSL https://gitlawb.com/install.sh | sh"));
-        console.log("  " + c.muted("# or: npm install -g @gitlawb/gl"));
+        console.log(c.warn("  Both binaries are required to push to Gitlawb."));
+        console.log(c.warn("  HTTP push is NOT supported — UCAN signing requires git-remote-gitlawb."));
         console.log();
-        console.log(c.muted("  After installing, re-run:"));
+        console.log(c.label("  Install both with one command:"));
+        console.log();
+        console.log("  " + c.accent("gitbank gitlawb install --auto"));
+        console.log();
+        console.log(c.muted("  Or run the installer manually (must use bash, not sh):"));
+        console.log("  " + c.accent("curl -fsSL https://gitlawb.com/install.sh | bash"));
+        console.log();
+        console.log(c.muted("  Then re-run:"));
         console.log("  " + c.accent("gitbank gitlawb setup --name " + opts.name));
-        process.exit(0);
+        console.log();
+        process.exit(1);
       }
 
       // ── Step 2: Set node URL ────────────────────────────────────────────
@@ -207,51 +217,26 @@ export function registerGitlawbCommands(program: Command): void {
         ok(`Repository "${opts.name}" created on Gitlawb.`);
       }
 
-      // ── Step 6: Clone ───────────────────────────────────────────────────
+      // ── Step 6: Clone via DID transport ─────────────────────────────────
 
       const did = glCapture(["identity", "show"], node);
-      let cloned = false;
 
       if (!opts.skipClone && did) {
-        step(6, "Clone repository");
-
+        step(6, "Clone repository via DID transport");
         const didUrl = `gitlawb://${did}/${opts.name}`;
-        const httpUrl = httpCloneUrl(node, did, opts.name);
-
-        if (gitRemoteAvailable()) {
-          console.log(c.label("  Clone URL (DID): ") + c.accent(didUrl));
-          console.log();
-          const r = spawnSync("git", ["clone", didUrl], {
-            stdio: "inherit",
-            env: { ...process.env, GITLAWB_NODE: node },
-          });
-          console.log();
-          if (r.status === 0) {
-            ok(`Cloned to ./${opts.name}`);
-            cloned = true;
-          } else {
-            console.log(c.warn("  ! DID clone failed. Falling back to HTTP..."));
-          }
+        console.log(c.label("  Clone URL: ") + c.accent(didUrl));
+        console.log();
+        const r = spawnSync("git", ["clone", didUrl], {
+          stdio: "inherit",
+          env: { ...process.env, GITLAWB_NODE: node },
+        });
+        console.log();
+        if (r.status === 0) {
+          ok(`Cloned to ./${opts.name}`);
         } else {
-          info("git-remote-gitlawb not on PATH — using HTTP clone (works without it).");
-          console.log();
-        }
-
-        if (!cloned) {
-          console.log(c.label("  Clone URL (HTTP): ") + c.accent(httpUrl));
-          console.log();
-          const r = spawnSync("git", ["clone", httpUrl], {
-            stdio: "inherit",
-            env: { ...process.env, GITLAWB_NODE: node },
-          });
-          console.log();
-          if (r.status === 0) {
-            ok(`Cloned to ./${opts.name}`);
-            cloned = true;
-          } else {
-            console.log(c.warn("  ! Clone failed. Try manually:"));
-            console.log("  " + c.accent(`git clone "${httpUrl}"`));
-          }
+          console.log(c.error("  ✗ Clone failed."));
+          console.log(c.muted("  Try manually:"));
+          console.log("  " + c.accent(`git clone "${didUrl}"`));
         }
       }
 
@@ -295,10 +280,34 @@ export function registerGitlawbCommands(program: Command): void {
 
   gl
     .command("install")
-    .description("Show how to install the Gitlawb CLI (gl + git-remote-gitlawb)")
-    .action(() => {
+    .description("Install gl + git-remote-gitlawb (with --auto runs the installer)")
+    .option("--auto", "Download and run the installer automatically (via bash)")
+    .action((opts: { auto?: boolean }) => {
       printSection("Install Gitlawb CLI");
-      printInstallInstructions();
+      if (!opts.auto) {
+        printInstallInstructions();
+        console.log(c.muted("  Tip: run with --auto to install automatically:"));
+        console.log("  " + c.accent("gitbank gitlawb install --auto"));
+        console.log();
+        return;
+      }
+      console.log(c.label("  Running: ") + c.accent("curl -fsSL https://gitlawb.com/install.sh | bash"));
+      console.log();
+      const result = spawnSync("bash", ["-c", "curl -fsSL https://gitlawb.com/install.sh | bash"], {
+        stdio: "inherit",
+      });
+      console.log();
+      if (result.status === 0) {
+        ok("Install complete.");
+        if (glAvailable()) ok("gl is on PATH");
+        else console.log(c.warn("  ! gl is not on PATH yet — open a new shell or run: source ~/.bashrc"));
+        if (gitRemoteAvailable()) ok("git-remote-gitlawb is on PATH");
+        else console.log(c.warn("  ! git-remote-gitlawb is not on PATH yet — open a new shell or run: source ~/.bashrc"));
+      } else {
+        console.log(c.error("  ✗ Installer failed (exit " + result.status + ")."));
+        console.log(c.muted("  Make sure bash and curl are available on this system."));
+      }
+      console.log();
     });
 
   // ── doctor ────────────────────────────────────────────────────────────────
