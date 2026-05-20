@@ -164,30 +164,83 @@ gitbank did link     # Instructions to link your vault to your DID
 
 ## Gitlawb — Decentralized Git
 
-Commands for the [Gitlawb](https://gitlawb.com) decentralized git network. Connects to `https://node.gitlawb.com` by default.
+Commands for the [Gitlawb](https://gitlawb.com) decentralized git network. Every identity is a cryptographic DID. Every push is signed. No accounts, no passwords.
 
-> **Note:** `gitlawb clone` requires `git-remote-gitlawb` installed. Run `gitbank gitlawb install` to see setup instructions.
+Connects to `https://node.gitlawb.com` by default.
+
+> `gitlawb clone` and `git push` require `git-remote-gitlawb` on PATH. Run `gitbank gitlawb install` for setup instructions.
+
+### Setup
 
 ```bash
-gitbank gitlawb status                  # Node status and peer info
-gitbank gitlawb repos [ownerDid]        # List repos (defaults to your DID)
-gitbank gitlawb create <name> [desc]    # Create a repo on the network
-gitbank gitlawb clone <name> [did]      # Clone repo via DID transport
-gitbank gitlawb install                 # Show Gitlawb CLI install instructions
+gitbank gitlawb install              # Installation instructions (gl + git-remote-gitlawb)
+gitbank gitlawb register             # Register your DID with the node, obtain a UCAN token
+gitbank gitlawb doctor               # Check: gl installed, git-remote-gitlawb, node reachable
+```
 
-gitbank gitlawb pr list <repo>                          # List pull requests
-gitbank gitlawb pr open <repo> <head> <base> <title>    # Open a pull request
-gitbank gitlawb pr open myrepo feature main "Fix bug" --body "Details"
+### Node & Profile
 
-gitbank gitlawb issues <repo>                           # List issues
-gitbank gitlawb cat <repo> <filepath>                   # Read file (default branch: main)
-gitbank gitlawb cat myrepo src/index.ts --ref dev       # Read from a specific branch
+```bash
+gitbank gitlawb status               # Node status: online, peers, repos, region
+gitbank gitlawb profile              # Your profile URL + trust score
+gitbank gitlawb profile --did <did>  # Look up another DID's profile
+```
 
-# Override node for any command:
+### Repositories
+
+```bash
+gitbank gitlawb repos [ownerDid]     # List repos (defaults to your own DID)
+gitbank gitlawb create <name> [desc] # Create a repository on the network
+gitbank gitlawb info <name>          # Repo metadata: owner, branch, clone URL, timestamps
+gitbank gitlawb clone <name> [did]   # Clone via DID transport (requires git-remote-gitlawb)
+```
+
+After cloning, set your DID as the git author so commits carry your identity:
+
+```bash
+git config user.name  "$(gl identity show)"
+git config user.email "$(gl identity show)@gitlawb"
+```
+
+### Pull Requests
+
+```bash
+gitbank gitlawb pr list <repo>                                        # List PRs
+gitbank gitlawb pr open <repo> <head> <base> <title> [--body]         # Open a PR
+gitbank gitlawb pr view <repo> <id>                                   # PR details and body
+gitbank gitlawb pr diff <repo> <id>                                   # Unified diff output
+gitbank gitlawb pr review <repo> <id> --status approved [--body]      # Approve
+gitbank gitlawb pr review <repo> <id> --status changes_requested      # Request changes
+gitbank gitlawb pr review <repo> <id> --status comment --body "Note"  # Comment
+gitbank gitlawb pr merge <repo> <id>                                  # Merge a PR
+```
+
+`--status` accepts: `approved` · `changes_requested` · `comment`
+
+### Issues
+
+```bash
+gitbank gitlawb issue list <repo>                         # List open issues (default)
+gitbank gitlawb issue create <repo> --title "Bug: ..."    # Create an issue
+gitbank gitlawb issue create <repo> --title "..." --body "Details"
+gitbank gitlawb issue view <repo> <id>                    # Issue details and body
+gitbank gitlawb issue close <repo> <id>                   # Close an issue
+```
+
+### Files
+
+```bash
+gitbank gitlawb cat <repo> <filepath>              # Read file from default branch
+gitbank gitlawb cat <repo> <filepath> --ref dev    # Read from a specific branch or commit
+```
+
+### Override node URL
+
+```bash
 gitbank gitlawb --node https://mynode.example.com status
 ```
 
-**Gitlawb environment variables:**
+**Environment variables:**
 
 | Variable | Default | Description |
 |---|---|---|
