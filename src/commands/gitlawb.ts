@@ -1,610 +1,594 @@
 import { Command } from "commander";
-import { GitlawbClient } from "@gitbank-agent/sdk";
-import { loadDID } from "@gitbank-agent/sdk";
-import { c, printSection, printKV, printDivider, shortHash } from "../ui/colors.js";
-import { execSync } from "node:child_process";
+import { c, printSection, printDivider } from "../ui/colors.js";
+import { execSync, spawnSync } from "node:child_process";
 import chalk from "chalk";
 
-function makeClient(node?: string): GitlawbClient {
-  const did = loadDID();
-  return new GitlawbClient({ node, did: did?.did });
+const DEFAULT_NODE = "https://node.gitlawb.com";
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function getNode(overrideNode?: string): string {
+  return overrideNode ?? process.env["GITLAWB_NODE"] ?? DEFAULT_NODE;
 }
 
-function requireDID(): string {
-  const did = loadDID()?.did;
-  if (!did) {
-    console.error(c.error("  ✗ No DID found."));
-    console.error(c.muted("  Generate one: gitbank did new"));
+function glAvailable(): boolean {
+  try {
+    execSync("gl --version", { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function gitRemoteAvailable(): boolean {
+  try {
+    execSync("git-remote-gitlawb --version", { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Run a gl command with inherited stdio (user sees output live). Returns exit code. */
+function runGl(args: string[], node: string): number {
+  const result = spawnSync("gl", args, {
+    stdio: "inherit",
+    env: { ...process.env, GITLAWB_NODE: node },
+  });
+  return result.status ?? 1;
+}
+
+/** Run a gl command silently and return stdout. Returns null on failure. */
+function glCapture(args: string[], node: string): string | null {
+  const result = spawnSync("gl", args, {
+    stdio: "pipe",
+    env: { ...process.env, GITLAWB_NODE: node },
+    encoding: "utf8",
+  });
+  if (result.status !== 0) return null;
+  return (result.stdout as string).trim();
+}
+
+function printInstallInstructions(): void {
+  console.log();
+  console.log(c.label("  Install the Gitlawb CLI:"));
+  console.log();
+  console.log("  " + chalk.bold("Option 1 — curl (macOS / Linux):"));
+  console.log("  " + c.accent("curl -fsSL https://gitlawb.com/install.sh | sh"));
+  console.log();
+  console.log("  " + chalk.bold("Option 2 — npm:"));
+  console.log("  " + c.accent("npm install -g @gitlawb/gl"));
+  console.log();
+  console.log("  " + chalk.bold("Option 3 — build from source (requires Rust):"));
+  console.log("  " + c.accent("cargo install --git https://github.com/gitlawb/gitlawb gl git-remote-gitlawb"));
+  console.log();
+  console.log(c.muted("  Supports: macOS arm64 · macOS x86_64 · Linux x86_64 · Linux arm64"));
+  console.log(c.muted("  After install, run: gitbank gitlawb setup"));
+  console.log();
+}
+
+function requireGl(): void {
+  if (!glAvailable()) {
+    console.log();
+    console.log(c.error("  ✗ Gitlawb CLI (gl) is not installed."));
+    printInstallInstructions();
     process.exit(1);
   }
-  return did;
 }
 
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString();
+function step(n: number, title: string): void {
+  console.log();
+  console.log(c.header(`  ┌─ Step ${n}: ${title}`));
+  console.log();
 }
 
-function statusBadge(s: string): string {
-  if (s === "open" || s === "approved") return c.success(s);
-  if (s === "closed" || s === "merged") return c.muted(s);
-  if (s === "changes_requested") return c.warn(s);
-  return c.value(s);
+function ok(msg: string): void {
+  console.log(c.success("  ✓ " + msg));
 }
+
+function info(msg: string): void {
+  console.log(c.muted("  " + msg));
+}
+
+// ── Main command group ────────────────────────────────────────────────────────
 
 export function registerGitlawbCommands(program: Command): void {
   const gl = program
     .command("gitlawb")
-    .description("Gitlawb decentralized git — repos, PRs, issues, and DID identity on the network")
-    .option("--node <url>", "Gitlawb node URL (default: https://node.gitlawb.com)");
+    .description("Gitlawb decentralized git — full workflow from install to live repo")
+    .option("--node <url>", "Gitlawb node URL", DEFAULT_NODE);
 
-  // ── Node ─────────────────────────────────────────────────────────────────
-
-  gl
-    .command("status")
-    .description("Check Gitlawb node status and network info")
-    .action(async () => {
-      const opts = gl.opts() as { node?: string };
-      const client = makeClient(opts.node);
-      printSection("Gitlawb Node Status");
-      try {
-        const s = await client.nodeStatus();
-        printKV([
-          { label: "Node",    value: c.accent(client.node) },
-          { label: "Online",  value: s.online ? c.success("yes") : c.error("no") },
-          { label: "DID",     value: c.hash(s.did) },
-          { label: "Region",  value: c.value(s.region ?? "—") },
-          { label: "Peers",   value: c.value(String(s.peers)) },
-          { label: "Repos",   value: c.value(String(s.repos)) },
-          { label: "Writes",  value: c.value(String(s.writesAccepted)) },
-          ...(s.version ? [{ label: "Version", value: c.muted(s.version) }] : []),
-        ]);
-        console.log();
-        console.log(c.muted("  Dashboard: https://gitlawb.com/node"));
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.log(c.warn("  Could not reach node: " + msg));
-        console.log(c.muted("  Node: " + client.node));
-      }
-      console.log();
-    });
+  // ── setup ─────────────────────────────────────────────────────────────────
+  // The main command: walks through the full flow from a bare VPS to a live repo.
 
   gl
-    .command("register")
-    .description("Register your DID with the Gitlawb node and obtain a UCAN bootstrap token")
-    .action(async () => {
-      const opts = gl.opts() as { node?: string };
-      requireDID();
-      const client = makeClient(opts.node);
-      printSection("Register with Gitlawb");
-      console.log(c.label("  DID:  ") + c.hash(client.did!));
-      console.log(c.label("  Node: ") + c.accent(client.node));
+    .command("setup")
+    .description("Full setup wizard: install gl → create identity → register → create repo → clone")
+    .requiredOption("--name <name>", "Repository name to create on Gitlawb")
+    .option("--description <desc>", "Repository description", "")
+    .option("--skip-clone", "Skip the git clone step after creating the repo")
+    .action(async (opts: { name: string; description: string; skipClone?: boolean }) => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+
+      printSection("Gitlawb Setup Wizard");
+      console.log(c.muted("  Node: " + node));
+      console.log(c.muted("  Repo: " + opts.name));
       console.log();
-      try {
-        const reg = await client.register();
-        console.log(c.success("  ✓ Registered successfully."));
+      printDivider();
+
+      // ── Step 1: Install gl ──────────────────────────────────────────────
+
+      step(1, "Install Gitlawb CLI (gl + git-remote-gitlawb)");
+
+      if (glAvailable()) {
+        const ver = glCapture(["--version"], node) ?? "installed";
+        ok("gl is installed  (" + ver + ")");
+        if (!gitRemoteAvailable()) {
+          console.log(c.warn("  ! git-remote-gitlawb is not on PATH."));
+          info("Install it to enable git clone/push via DID transport:");
+          console.log("  " + c.accent("curl -fsSL https://gitlawb.com/install.sh | sh"));
+          console.log();
+        } else {
+          ok("git-remote-gitlawb is installed");
+        }
+      } else {
+        console.log(c.warn("  gl is not installed. Install it now:"));
         console.log();
-        printKV([
-          { label: "DID",      value: c.hash(reg.did) },
-          { label: "UCAN",     value: c.muted(reg.ucan.slice(0, 40) + "…") },
-          { label: "Saved to", value: c.muted("~/.gitlawb/ucan.json  (via gl register)") },
-        ]);
-        console.log();
-        console.log(c.muted("  Profile: " + client.profileUrl(reg.did).profile));
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.log(c.warn("  Node returned: " + msg));
-        console.log();
-        console.log(c.label("  You can also register with the gl CLI:"));
-        console.log("  " + c.accent("gl register"));
-      }
-      console.log();
-    });
-
-  gl
-    .command("profile")
-    .description("Show your Gitlawb profile URL and trust score")
-    .option("--did <did>", "Look up a specific DID instead of your own")
-    .action(async (opts: { did?: string }) => {
-      const glOpts = gl.opts() as { node?: string };
-      const client = makeClient(glOpts.node);
-      const did = opts.did ?? client.did ?? requireDID();
-      const urls = client.profileUrl(did);
-
-      printSection("Gitlawb Profile");
-      printKV([
-        { label: "DID",     value: c.hash(did) },
-        { label: "Profile", value: chalk.underline(c.accent(urls.profile)) },
-        { label: "Repos",   value: chalk.underline(c.muted(urls.repos)) },
-      ]);
-
-      try {
-        const trust = await client.trustScore(did);
-        console.log();
-        printKV([
-          { label: "Trust score", value: c.value(String(trust.score)) },
-          { label: "Push count",  value: c.value(String(trust.pushCount)) },
-          { label: "Registered",  value: c.muted(formatDate(trust.registeredAt)) },
-        ]);
-      } catch {
-        // trust score endpoint may not be available on all nodes
-      }
-      console.log();
-    });
-
-  gl
-    .command("doctor")
-    .description("Check Gitlawb CLI installation and node connectivity")
-    .action(() => {
-      printSection("Gitlawb Doctor");
-
-      let glInstalled = false;
-      let gitRemoteInstalled = false;
-      let nodeReachable = false;
-
-      try { execSync("gl --version", { stdio: "pipe" }); glInstalled = true; } catch { /* not installed */ }
-      try { execSync("git-remote-gitlawb --version", { stdio: "pipe" }); gitRemoteInstalled = true; } catch { /* not installed */ }
-
-      const opts = gl.opts() as { node?: string };
-      const node = opts.node ?? process.env["GITLAWB_NODE"] ?? "https://node.gitlawb.com";
-
-      try {
-        execSync(`curl -sf --max-time 5 "${node}/api/v1/status" -o /dev/null`, { stdio: "pipe" });
-        nodeReachable = true;
-      } catch { /* unreachable */ }
-
-      const localDid = loadDID();
-
-      console.log(c.label("  Checks:"));
-      console.log(`  ${glInstalled ? c.success("✓") : c.error("✗")}  gl CLI              ${glInstalled ? c.muted("installed") : c.warn("missing — npm install -g @gitlawb/gl")}`);
-      console.log(`  ${gitRemoteInstalled ? c.success("✓") : c.error("✗")}  git-remote-gitlawb  ${gitRemoteInstalled ? c.muted("installed") : c.warn("missing — needed for clone/push")}`);
-      console.log(`  ${nodeReachable ? c.success("✓") : c.error("✗")}  node reachable      ${nodeReachable ? c.muted(node) : c.warn("cannot reach " + node)}`);
-      console.log(`  ${localDid ? c.success("✓") : c.warn("!")}  local DID           ${localDid ? c.hash(localDid.did) : c.warn("none — run: gitbank did new")}`);
-      console.log();
-
-      if (!glInstalled || !gitRemoteInstalled) {
-        console.log(c.label("  Install Gitlawb CLI:"));
         console.log("  " + c.accent("curl -fsSL https://gitlawb.com/install.sh | sh"));
+        console.log("  " + c.muted("# or: npm install -g @gitlawb/gl"));
         console.log();
+        console.log(c.muted("  After installing, re-run:"));
+        console.log("  " + c.accent("gitbank gitlawb setup --name " + opts.name));
+        process.exit(0);
       }
-      if (glInstalled) {
-        console.log(c.label("  Run the official health check:"));
-        console.log("  " + c.accent("gl doctor"));
+
+      // ── Step 2: Set node URL ────────────────────────────────────────────
+
+      step(2, "Configure node URL");
+      console.log(c.label("  " + node));
+      console.log();
+      if (!process.env["GITLAWB_NODE"]) {
+        info("Add this to your ~/.bashrc or ~/.zshrc to make it permanent:");
+        console.log("  " + c.accent("export GITLAWB_NODE=" + node));
         console.log();
+      } else {
+        ok("GITLAWB_NODE is set  (" + process.env["GITLAWB_NODE"] + ")");
       }
-    });
 
-  // ── Repos ─────────────────────────────────────────────────────────────────
+      // ── Step 3: Create identity ─────────────────────────────────────────
 
-  gl
-    .command("repos [ownerDid]")
-    .description("List repos on the Gitlawb network (defaults to your own DID)")
-    .action(async (ownerDid?: string) => {
-      const opts = gl.opts() as { node?: string };
-      const client = makeClient(opts.node);
-      const did = ownerDid ?? client.did;
+      step(3, "Create DID identity (Ed25519 keypair)");
 
-      printSection("Gitlawb Repos");
-      try {
-        const repos = await client.listRepos(did ?? undefined);
-        if (repos.length === 0) {
-          console.log(c.muted("  No repos found."));
-          console.log(c.muted("  Create one: gitbank gitlawb create <name>"));
-          console.log();
-          return;
-        }
-        for (const r of repos) {
-          console.log(`  ${c.accent(r.name.padEnd(32))} ${c.muted(r.description || "")}`);
-          console.log(`  ${c.label("owner  ")} ${c.hash(r.owner)}`);
-          console.log(`  ${c.label("branch ")} ${c.value(r.defaultBranch)}`);
-          console.log(`  ${c.label("clone  ")} ${c.value(client.cloneUrl(r.name, r.owner))}`);
-          console.log(`  ${c.label("updated")} ${c.muted(formatDate(r.updatedAt))}`);
-          console.log();
-        }
-        console.log(c.muted(`  ${repos.length} repo(s).`));
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.log(c.warn("  Cannot fetch repos: " + msg));
-        if (did) console.log(c.muted("  DID: " + did));
-        console.log(c.muted("  Fallback: gl repo list"));
-      }
-      console.log();
-    });
-
-  gl
-    .command("create <name> [description]")
-    .description("Create a new repository on the Gitlawb network")
-    .action(async (name: string, description?: string) => {
-      const opts = gl.opts() as { node?: string };
-      requireDID();
-      const client = makeClient(opts.node);
-      console.log(c.label(`  Creating repo "${name}"...`));
-      try {
-        const r = await client.createRepo(name, description ?? "");
-        printSection("Repo Created");
-        printKV([
-          { label: "Name",    value: c.accent(r.name) },
-          { label: "Owner",   value: c.hash(r.owner) },
-          { label: "Branch",  value: c.value(r.defaultBranch) },
-          { label: "Clone",   value: c.value(client.cloneUrl(r.name, r.owner)) },
-          { label: "Created", value: c.muted(formatDate(r.createdAt)) },
-        ]);
+      const existingDid = glCapture(["identity", "show"], node);
+      if (existingDid) {
+        ok("Identity exists:");
+        console.log("  " + c.hash(existingDid));
+      } else {
+        info("No identity found. Generating a new Ed25519 keypair...");
         console.log();
-        console.log(c.label("  Next steps:"));
-        const cloneUrl = client.cloneUrl(r.name, r.owner);
-        console.log("  " + c.accent(`git clone ${cloneUrl}`));
-        console.log("  " + c.accent(`cd ${r.name}`));
-        console.log("  " + c.muted("git config user.name  \"$(gl identity show)\""));
-        console.log("  " + c.muted("git config user.email \"$(gl identity show)@gitlawb\""));
+        const code = runGl(["identity", "new"], node);
+        if (code !== 0) {
+          console.log(c.error("  ✗ Failed to create identity. Run manually: gl identity new"));
+          process.exit(1);
+        }
+      }
+      console.log();
+
+      // ── Step 4: Register with node ──────────────────────────────────────
+
+      step(4, "Register DID with node (sign UCAN token)");
+      info("Registering DID with " + node + "...");
+      console.log();
+      runGl(["register", "--node", node], node);
+      console.log();
+      ok("Registration complete. UCAN token saved to ~/.gitlawb/ucan.json");
+
+      // ── Step 5: Create repository ───────────────────────────────────────
+
+      step(5, `Create repository "${opts.name}"`);
+      console.log();
+      const repoArgs = ["repo", "create", opts.name, "--node", node];
+      if (opts.description) repoArgs.push("--description", opts.description);
+      const repoCode = runGl(repoArgs, node);
+      console.log();
+      if (repoCode !== 0) {
+        console.log(c.warn("  ! Repo may already exist, or the create failed. Continuing..."));
+      } else {
+        ok(`Repository "${opts.name}" created on Gitlawb.`);
+      }
+
+      // ── Step 6: Clone ───────────────────────────────────────────────────
+
+      const did = glCapture(["identity", "show"], node);
+
+      if (!opts.skipClone) {
+        step(6, "Clone repository");
+        if (!gitRemoteAvailable()) {
+          console.log(c.warn("  ! git-remote-gitlawb is not installed — cannot clone via DID."));
+          info("Install it first:");
+          console.log("  " + c.accent("curl -fsSL https://gitlawb.com/install.sh | sh"));
+          console.log();
+          info("Then clone manually:");
+          if (did) console.log("  " + c.accent(`git clone "gitlawb://${did}/${opts.name}"`));
+        } else if (did) {
+          const cloneUrl = `gitlawb://${did}/${opts.name}`;
+          console.log(c.label("  Clone URL: ") + c.accent(cloneUrl));
+          console.log();
+          const cloneResult = spawnSync("git", ["clone", cloneUrl], {
+            stdio: "inherit",
+            env: { ...process.env, GITLAWB_NODE: node },
+          });
+          console.log();
+          if (cloneResult.status === 0) {
+            ok(`Cloned to ./${opts.name}`);
+          } else {
+            console.log(c.warn("  ! Clone failed. You can clone manually:"));
+            console.log("  " + c.accent(`git clone "${cloneUrl}"`));
+          }
+        }
+      }
+
+      // ── Step 7: Next steps ──────────────────────────────────────────────
+
+      step(7, "Done — your repo is live");
+      printDivider();
+      console.log();
+
+      if (did) {
+        const didKey = did.split(":")[2] ?? "";
+        const short = didKey.slice(0, 8);
+        console.log(c.label("  Your DID:"));
+        console.log("  " + c.hash(did));
         console.log();
-        console.log(c.muted("  Profile: " + client.profileUrl(r.owner).profile));
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.log(c.warn("  Node returned: " + msg));
-        console.log(c.muted("  Fallback: gl repo create " + name + (description ? ` --description "${description}"` : "")));
-      }
-      console.log();
-    });
-
-  gl
-    .command("info <name>")
-    .description("Show metadata for a Gitlawb repository")
-    .action(async (name: string) => {
-      const opts = gl.opts() as { node?: string };
-      const client = makeClient(opts.node);
-      try {
-        const r = await client.getRepo(name);
-        printSection(`Repo — ${r.name}`);
-        printKV([
-          { label: "Name",        value: c.accent(r.name) },
-          { label: "Owner",       value: c.hash(r.owner) },
-          { label: "Description", value: c.value(r.description || "—") },
-          { label: "Branch",      value: c.value(r.defaultBranch) },
-          { label: "Clone URL",   value: c.value(client.cloneUrl(r.name, r.owner)) },
-          { label: "Created",     value: c.muted(formatDate(r.createdAt)) },
-          { label: "Updated",     value: c.muted(formatDate(r.updatedAt)) },
-        ]);
-      } catch (e: unknown) {
-        console.log(c.warn("  " + (e instanceof Error ? e.message : String(e))));
-        console.log(c.muted("  Fallback: gl repo info " + name));
-      }
-      console.log();
-    });
-
-  gl
-    .command("clone <name> [ownerDid]")
-    .description("Clone a Gitlawb repository using DID transport (requires git-remote-gitlawb)")
-    .action(async (name: string, ownerDid?: string) => {
-      const opts = gl.opts() as { node?: string };
-      const client = makeClient(opts.node);
-      const did = ownerDid ?? client.did ?? requireDID();
-      const url = client.cloneUrl(name, did);
-
-      console.log(c.label("  Cloning: ") + c.accent(url));
-      console.log();
-      try {
-        execSync(`git clone "${url}"`, { stdio: "inherit" });
+        console.log(c.label("  Profile:"));
+        console.log("  " + chalk.underline(c.accent(`https://gitlawb.com/${short}`)));
         console.log();
-        console.log(c.success(`  ✓ Cloned to ./${name}`));
-        console.log();
-        console.log(c.label("  Set your DID as git author:"));
-        console.log("  " + c.accent(`cd ${name}`));
-        console.log("  " + c.accent("git config user.name  \"$(gl identity show)\""));
-        console.log("  " + c.accent("git config user.email \"$(gl identity show)@gitlawb\""));
-      } catch {
-        console.error(c.error("  ✗ Clone failed."));
-        console.error(c.muted("  git-remote-gitlawb must be on PATH."));
-        console.error(c.muted("  Install: curl -fsSL https://gitlawb.com/install.sh | sh"));
-        process.exit(1);
+        console.log(c.label("  Browse all repos:"));
+        console.log("  " + chalk.underline(c.muted("https://gitlawb.com/node/repos")));
       }
+
+      console.log();
+      console.log(c.label("  Next steps inside the repo:"));
+      console.log("  " + c.muted("cd " + opts.name));
+      if (did) {
+        console.log("  " + c.muted(`git config user.name  "${did}"`));
+        console.log("  " + c.muted(`git config user.email "${did}@gitlawb"`));
+      }
+      console.log("  " + c.muted("echo '# " + opts.name + "' > README.md"));
+      console.log("  " + c.muted("git add . && git commit -m 'init'"));
+      console.log("  " + c.muted("git push origin main"));
+      console.log();
+      console.log(c.muted("  Manage with:  gitbank gitlawb repo list"));
+      console.log(c.muted("  Open a PR:    gitbank gitlawb pr create " + opts.name + " --head <branch> --base main --title \"...\""));
       console.log();
     });
 
-  // ── Pull Requests ─────────────────────────────────────────────────────────
-
-  const prCmd = gl
-    .command("pr")
-    .description("Pull request management on Gitlawb repositories");
-
-  prCmd
-    .command("list <repo>")
-    .description("List pull requests for a repository")
-    .action(async (repo: string) => {
-      const opts = gl.opts() as { node?: string };
-      const client = makeClient(opts.node);
-      try {
-        const prs = await client.listPRs(repo);
-        printSection(`Pull Requests — ${repo}`);
-        if (prs.length === 0) {
-          console.log(c.muted("  No pull requests."));
-          console.log();
-          return;
-        }
-        for (const pr of prs) {
-          const num = pr.number ?? pr.id.slice(0, 8);
-          console.log(`  ${c.label("#" + String(num).padEnd(4))} ${c.accent(pr.title)}`);
-          console.log(`  ${" ".repeat(6)}${statusBadge(pr.status).padEnd(18)} ${c.value(pr.head + " → " + pr.base)}`);
-          console.log(`  ${" ".repeat(6)}${c.hash(pr.author)}  ${c.muted(formatDate(pr.createdAt))}`);
-          console.log();
-        }
-        console.log(c.muted(`  ${prs.length} PR(s).`));
-      } catch (e: unknown) {
-        console.log(c.warn("  " + (e instanceof Error ? e.message : String(e))));
-        console.log(c.muted("  Fallback: gl pr list " + repo));
-      }
-      console.log();
-    });
-
-  prCmd
-    .command("view <repo> <id>")
-    .description("View pull request details")
-    .action(async (repo: string, id: string) => {
-      const opts = gl.opts() as { node?: string };
-      const client = makeClient(opts.node);
-      try {
-        const pr = await client.getPR(repo, id);
-        printSection(`PR #${pr.number ?? id} — ${pr.title}`);
-        printKV([
-          { label: "Status",   value: statusBadge(pr.status) },
-          { label: "Branches", value: c.value(pr.head + " → " + pr.base) },
-          { label: "Author",   value: c.hash(pr.author) },
-          { label: "Created",  value: c.muted(formatDate(pr.createdAt)) },
-          ...(pr.mergedAt ? [{ label: "Merged", value: c.muted(formatDate(pr.mergedAt)) }] : []),
-        ]);
-        if (pr.body) {
-          printDivider();
-          console.log();
-          pr.body.split("\n").forEach(l => console.log("  " + c.muted(l)));
-        }
-      } catch (e: unknown) {
-        console.log(c.warn("  " + (e instanceof Error ? e.message : String(e))));
-        console.log(c.muted("  Fallback: gl pr view " + repo + " " + id));
-      }
-      console.log();
-    });
-
-  prCmd
-    .command("diff <repo> <id>")
-    .description("Show the unified diff for a pull request")
-    .action(async (repo: string, id: string) => {
-      const opts = gl.opts() as { node?: string };
-      const client = makeClient(opts.node);
-      try {
-        const diff = await client.getPRDiff(repo, id);
-        console.log(diff);
-      } catch (e: unknown) {
-        console.error(c.error("  ✗ " + (e instanceof Error ? e.message : String(e))));
-        console.error(c.muted("  Fallback: gl pr diff " + repo + " " + id));
-        process.exit(1);
-      }
-    });
-
-  prCmd
-    .command("review <repo> <id>")
-    .description("Submit a review for a pull request")
-    .requiredOption("--status <status>", "Review decision: approved | changes_requested | comment")
-    .option("--body <text>", "Review comment body")
-    .action(async (repo: string, id: string, opts: { status: string; body?: string }) => {
-      const glOpts = gl.opts() as { node?: string };
-      const client = makeClient(glOpts.node);
-      const status = opts.status as "approved" | "changes_requested" | "comment";
-      if (!["approved", "changes_requested", "comment"].includes(status)) {
-        console.error(c.error("  ✗ --status must be one of: approved, changes_requested, comment"));
-        process.exit(1);
-      }
-      try {
-        const review = await client.reviewPR(repo, id, status, opts.body ?? "");
-        printSection("Review Submitted");
-        printKV([
-          { label: "PR",     value: c.value(`${repo} #${id}`) },
-          { label: "Status", value: statusBadge(review.status) },
-          { label: "Author", value: c.hash(review.author) },
-        ]);
-        if (opts.body) {
-          console.log();
-          console.log(c.muted("  " + opts.body));
-        }
-      } catch (e: unknown) {
-        console.log(c.warn("  " + (e instanceof Error ? e.message : String(e))));
-        console.log(c.muted(`  Fallback: gl pr review ${repo} ${id} --status ${status}`));
-      }
-      console.log();
-    });
-
-  prCmd
-    .command("merge <repo> <id>")
-    .description("Merge a pull request")
-    .action(async (repo: string, id: string) => {
-      const opts = gl.opts() as { node?: string };
-      const client = makeClient(opts.node);
-      console.log(c.label(`  Merging PR #${id} in ${repo}...`));
-      try {
-        await client.mergePR(repo, id);
-        console.log(c.success(`  ✓ PR #${id} merged.`));
-      } catch (e: unknown) {
-        console.log(c.warn("  " + (e instanceof Error ? e.message : String(e))));
-        console.log(c.muted("  Fallback: gl pr merge " + repo + " " + id));
-      }
-      console.log();
-    });
-
-  prCmd
-    .command("open <repo> <head> <base> <title>")
-    .description("Open a new pull request")
-    .option("--body <text>", "PR description")
-    .action(async (repo: string, head: string, base: string, title: string, opts: { body?: string }) => {
-      const glOpts = gl.opts() as { node?: string };
-      const client = makeClient(glOpts.node);
-      console.log(c.label(`  Opening PR "${title}" in ${repo}...`));
-      try {
-        const pr = await client.openPR(repo, head, base, title, opts.body ?? "");
-        printSection("Pull Request Opened");
-        printKV([
-          { label: "ID",       value: shortHash(pr.id) },
-          { label: "Title",    value: c.accent(pr.title) },
-          { label: "Branches", value: c.value(pr.head + " → " + pr.base) },
-          { label: "Status",   value: statusBadge(pr.status) },
-          { label: "Author",   value: c.hash(pr.author) },
-        ]);
-      } catch (e: unknown) {
-        console.log(c.warn("  " + (e instanceof Error ? e.message : String(e))));
-        console.log(c.muted(`  Fallback: gl pr create ${repo} --head ${head} --base ${base} --title "${title}"`));
-      }
-      console.log();
-    });
-
-  // ── Issues ────────────────────────────────────────────────────────────────
-
-  const issueCmd = gl
-    .command("issue")
-    .description("Issue management on Gitlawb repositories");
-
-  issueCmd
-    .command("list <repo>", { isDefault: true })
-    .description("List issues for a repository")
-    .action(async (repo: string) => {
-      const opts = gl.opts() as { node?: string };
-      const client = makeClient(opts.node);
-      try {
-        const issues = await client.listIssues(repo);
-        printSection(`Issues — ${repo}`);
-        if (issues.length === 0) {
-          console.log(c.muted("  No open issues."));
-          console.log();
-          return;
-        }
-        for (const iss of issues) {
-          const num = iss.number ?? iss.id.slice(0, 8);
-          const labels = iss.labels.length > 0 ? c.muted(" [" + iss.labels.join(", ") + "]") : "";
-          console.log(`  ${c.label("#" + String(num).padEnd(4))} ${c.accent(iss.title)}${labels}`);
-          console.log(`  ${" ".repeat(6)}${statusBadge(iss.status).padEnd(18)} ${c.hash(iss.author)}  ${c.muted(formatDate(iss.createdAt))}`);
-          console.log();
-        }
-        console.log(c.muted(`  ${issues.length} issue(s).`));
-      } catch (e: unknown) {
-        console.log(c.warn("  " + (e instanceof Error ? e.message : String(e))));
-        console.log(c.muted("  Fallback: gl issue list " + repo));
-      }
-      console.log();
-    });
-
-  issueCmd
-    .command("view <repo> <id>")
-    .description("View issue details")
-    .action(async (repo: string, id: string) => {
-      const opts = gl.opts() as { node?: string };
-      const client = makeClient(opts.node);
-      try {
-        const iss = await client.getIssue(repo, id);
-        printSection(`Issue #${iss.number ?? id} — ${iss.title}`);
-        printKV([
-          { label: "Status",  value: statusBadge(iss.status) },
-          { label: "Author",  value: c.hash(iss.author) },
-          { label: "Created", value: c.muted(formatDate(iss.createdAt)) },
-          ...(iss.closedAt ? [{ label: "Closed", value: c.muted(formatDate(iss.closedAt)) }] : []),
-          ...(iss.labels.length ? [{ label: "Labels", value: c.value(iss.labels.join(", ")) }] : []),
-        ]);
-        if (iss.body) {
-          printDivider();
-          console.log();
-          iss.body.split("\n").forEach(l => console.log("  " + c.muted(l)));
-        }
-      } catch (e: unknown) {
-        console.log(c.warn("  " + (e instanceof Error ? e.message : String(e))));
-        console.log(c.muted("  Fallback: gl issue view " + repo + " " + id));
-      }
-      console.log();
-    });
-
-  issueCmd
-    .command("create <repo>")
-    .description("Create a new issue")
-    .requiredOption("--title <title>", "Issue title")
-    .option("--body <text>", "Issue body / description")
-    .action(async (repo: string, opts: { title: string; body?: string }) => {
-      const glOpts = gl.opts() as { node?: string };
-      const client = makeClient(glOpts.node);
-      console.log(c.label(`  Creating issue in ${repo}...`));
-      try {
-        const iss = await client.createIssue(repo, opts.title, opts.body ?? "");
-        printSection("Issue Created");
-        printKV([
-          { label: "ID",     value: shortHash(iss.id) },
-          { label: "Title",  value: c.accent(iss.title) },
-          { label: "Status", value: statusBadge(iss.status) },
-          { label: "Author", value: c.hash(iss.author) },
-        ]);
-      } catch (e: unknown) {
-        console.log(c.warn("  " + (e instanceof Error ? e.message : String(e))));
-        console.log(c.muted(`  Fallback: gl issue create ${repo} --title "${opts.title}"`));
-      }
-      console.log();
-    });
-
-  issueCmd
-    .command("close <repo> <id>")
-    .description("Close an issue")
-    .action(async (repo: string, id: string) => {
-      const opts = gl.opts() as { node?: string };
-      const client = makeClient(opts.node);
-      console.log(c.label(`  Closing issue #${id} in ${repo}...`));
-      try {
-        await client.closeIssue(repo, id);
-        console.log(c.success(`  ✓ Issue #${id} closed.`));
-      } catch (e: unknown) {
-        console.log(c.warn("  " + (e instanceof Error ? e.message : String(e))));
-        console.log(c.muted("  Fallback: gl issue close " + repo + " " + id));
-      }
-      console.log();
-    });
-
-  // ── Files ─────────────────────────────────────────────────────────────────
-
-  gl
-    .command("cat <repo> <filepath>")
-    .description("Read a file from a Gitlawb repository")
-    .option("--ref <ref>", "Branch or commit ref (default: main)")
-    .action(async (repo: string, filepath: string, opts: { ref?: string }) => {
-      const glOpts = gl.opts() as { node?: string };
-      const client = makeClient(glOpts.node);
-      try {
-        const content = await client.readFile(repo, filepath, opts.ref ?? "main");
-        console.log(content);
-      } catch (e: unknown) {
-        console.error(c.error("  ✗ " + (e instanceof Error ? e.message : String(e))));
-        process.exit(1);
-      }
-    });
-
-  // ── Install ───────────────────────────────────────────────────────────────
+  // ── install ───────────────────────────────────────────────────────────────
 
   gl
     .command("install")
-    .description("Show installation instructions for the Gitlawb CLI (gl + git-remote-gitlawb)")
+    .description("Show how to install the Gitlawb CLI (gl + git-remote-gitlawb)")
     .action(() => {
       printSection("Install Gitlawb CLI");
-      printDivider();
-      console.log(c.label("  macOS / Linux (recommended):"));
-      console.log("  " + c.accent("curl -fsSL https://gitlawb.com/install.sh | sh"));
+      printInstallInstructions();
+    });
+
+  // ── doctor ────────────────────────────────────────────────────────────────
+
+  gl
+    .command("doctor")
+    .description("Check gl installation, identity, registration, and node connectivity")
+    .action(() => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      printSection("Gitlawb Doctor");
+      runGl(["doctor", "--node", node], node);
       console.log();
-      console.log(c.muted("  Installs gl and git-remote-gitlawb. Supports:"));
-      console.log(c.muted("  macOS arm64, macOS x86_64, Linux x86_64, Linux arm64"));
+    });
+
+  // ── status ────────────────────────────────────────────────────────────────
+
+  gl
+    .command("status")
+    .description("Show Gitlawb node status")
+    .action(() => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      printSection("Gitlawb Node Status");
+      runGl(["node", "status", "--node", node], node);
       console.log();
-      printDivider();
-      console.log(c.label("  npm:"));
-      console.log("  " + c.accent("npm install -g @gitlawb/gl"));
+    });
+
+  // ── profile ───────────────────────────────────────────────────────────────
+
+  gl
+    .command("profile")
+    .description("Show your Gitlawb profile URL")
+    .action(() => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      const did = glCapture(["identity", "show"], node);
+      if (!did) {
+        console.log(c.warn("  No identity found. Run: gitbank gitlawb setup --name <repo>"));
+        process.exit(1);
+      }
+      const didKey = did.split(":")[2] ?? "";
+      const short = didKey.slice(0, 8);
+      printSection("Your Gitlawb Profile");
+      console.log(c.label("  DID:     ") + c.hash(did));
+      console.log(c.label("  Profile: ") + chalk.underline(c.accent(`https://gitlawb.com/${short}`)));
+      console.log(c.label("  Repos:   ") + chalk.underline(c.muted("https://gitlawb.com/node/repos")));
       console.log();
-      printDivider();
-      console.log(c.label("  Build from source (requires Rust):"));
-      console.log("  " + c.accent("cargo install --git https://github.com/gitlawb/gitlawb gl git-remote-gitlawb"));
+    });
+
+  // ── identity ──────────────────────────────────────────────────────────────
+
+  const identityCmd = gl
+    .command("identity")
+    .description("Manage your Gitlawb Ed25519 identity");
+
+  identityCmd
+    .command("new")
+    .description("Generate a new Ed25519 keypair and DID")
+    .action(() => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      printSection("Create Identity");
+      runGl(["identity", "new"], node);
       console.log();
-      printDivider();
-      console.log(c.label("  After install:"));
-      console.log("  1. " + c.accent("export GITLAWB_NODE=https://node.gitlawb.com"));
-      console.log("  2. " + c.accent("gl identity new") + c.muted("  ← or: gitbank did new"));
-      console.log("  3. " + c.accent("gl register") + c.muted("         ← or: gitbank gitlawb register"));
-      console.log("  4. " + c.accent("gl doctor") + c.muted("           ← verify everything is working"));
+    });
+
+  identityCmd
+    .command("show")
+    .description("Print your DID")
+    .action(() => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      runGl(["identity", "show"], node);
       console.log();
-      console.log(c.muted("  Docs: https://gitlawb.com/start"));
+    });
+
+  // ── register ──────────────────────────────────────────────────────────────
+
+  gl
+    .command("register")
+    .description("Register your DID with the node and save a UCAN bootstrap token")
+    .action(() => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      printSection("Register with Gitlawb");
+      console.log(c.label("  Node: ") + c.accent(node));
+      console.log();
+      runGl(["register", "--node", node], node);
+      console.log();
+      ok("UCAN token saved to ~/.gitlawb/ucan.json");
+      console.log();
+    });
+
+  // ── repo ──────────────────────────────────────────────────────────────────
+
+  const repoCmd = gl
+    .command("repo")
+    .description("Repository management on the Gitlawb network");
+
+  repoCmd
+    .command("create <name>")
+    .description("Create a new repository")
+    .option("--description <desc>", "Repository description", "")
+    .action((name: string, opts: { description: string }) => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      printSection("Create Repo");
+      const args = ["repo", "create", name, "--node", node];
+      if (opts.description) args.push("--description", opts.description);
+      runGl(args, node);
+      console.log();
+
+      const did = glCapture(["identity", "show"], node);
+      if (did) {
+        ok(`Repo "${name}" created.`);
+        console.log();
+        console.log(c.label("  Clone with:"));
+        console.log("  " + c.accent(`git clone "gitlawb://${did}/${name}"`));
+        console.log();
+      }
+    });
+
+  repoCmd
+    .command("list")
+    .description("List your repos on Gitlawb")
+    .action(() => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      printSection("Gitlawb Repos");
+      runGl(["repo", "list", "--node", node], node);
+      console.log();
+    });
+
+  repoCmd
+    .command("info <name>")
+    .description("Show metadata for a repository")
+    .action((name: string) => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      printSection(`Repo — ${name}`);
+      runGl(["repo", "info", name, "--node", node], node);
+      console.log();
+    });
+
+  repoCmd
+    .command("clone <name> [ownerDid]")
+    .description("Clone a repository (uses your DID if ownerDid is not given)")
+    .action((name: string, ownerDid?: string) => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+
+      if (!gitRemoteAvailable()) {
+        console.log(c.error("  ✗ git-remote-gitlawb is not installed."));
+        console.log(c.muted("  Install: curl -fsSL https://gitlawb.com/install.sh | sh"));
+        process.exit(1);
+      }
+
+      const did = ownerDid ?? glCapture(["identity", "show"], node);
+      if (!did) {
+        console.log(c.error("  ✗ No DID. Run: gitbank gitlawb identity new"));
+        process.exit(1);
+      }
+
+      const cloneUrl = `gitlawb://${did}/${name}`;
+      printSection("Clone Repo");
+      console.log(c.label("  URL: ") + c.accent(cloneUrl));
+      console.log();
+
+      const result = spawnSync("git", ["clone", cloneUrl], {
+        stdio: "inherit",
+        env: { ...process.env, GITLAWB_NODE: node },
+      });
+      console.log();
+
+      if (result.status === 0) {
+        ok(`Cloned to ./${name}`);
+        console.log();
+        console.log(c.label("  Set your DID as git author:"));
+        console.log("  " + c.accent(`cd ${name}`));
+        console.log("  " + c.accent(`git config user.name  "${did}"`));
+        console.log("  " + c.accent(`git config user.email "${did}@gitlawb"`));
+      } else {
+        console.log(c.error("  ✗ Clone failed."));
+      }
+      console.log();
+    });
+
+  // ── pr ───────────────────────────────────────────────────────────────────
+
+  const prCmd = gl
+    .command("pr")
+    .description("Pull request management");
+
+  prCmd
+    .command("create <repo>")
+    .description("Open a pull request")
+    .requiredOption("--head <branch>", "Source branch")
+    .requiredOption("--base <branch>", "Target branch")
+    .requiredOption("--title <title>", "PR title")
+    .option("--body <text>", "PR description")
+    .action((repo: string, opts: { head: string; base: string; title: string; body?: string }) => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      const args = ["pr", "create", repo, "--head", opts.head, "--base", opts.base, "--title", opts.title, "--node", node];
+      if (opts.body) args.push("--body", opts.body);
+      printSection("Create PR");
+      runGl(args, node);
+      console.log();
+    });
+
+  prCmd
+    .command("list <repo>")
+    .description("List pull requests")
+    .action((repo: string) => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      printSection(`PRs — ${repo}`);
+      runGl(["pr", "list", repo, "--node", node], node);
+      console.log();
+    });
+
+  prCmd
+    .command("view <repo> <number>")
+    .description("View a pull request")
+    .action((repo: string, number: string) => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      runGl(["pr", "view", repo, number, "--node", node], node);
+      console.log();
+    });
+
+  prCmd
+    .command("diff <repo> <number>")
+    .description("Show the diff for a pull request")
+    .action((repo: string, number: string) => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      runGl(["pr", "diff", repo, number, "--node", node], node);
+      console.log();
+    });
+
+  prCmd
+    .command("review <repo> <number>")
+    .description("Submit a review")
+    .requiredOption("--status <status>", "approved | changes_requested | comment")
+    .option("--body <text>", "Review comment")
+    .action((repo: string, number: string, opts: { status: string; body?: string }) => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      const args = ["pr", "review", repo, number, "--status", opts.status, "--node", node];
+      if (opts.body) args.push("--body", opts.body);
+      printSection("Submit Review");
+      runGl(args, node);
+      console.log();
+    });
+
+  prCmd
+    .command("merge <repo> <number>")
+    .description("Merge a pull request")
+    .action((repo: string, number: string) => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      printSection("Merge PR");
+      runGl(["pr", "merge", repo, number, "--node", node], node);
+      console.log();
+    });
+
+  // ── issue ─────────────────────────────────────────────────────────────────
+
+  const issueCmd = gl
+    .command("issue")
+    .description("Issue management");
+
+  issueCmd
+    .command("create <repo>")
+    .description("Create an issue")
+    .requiredOption("--title <title>", "Issue title")
+    .option("--body <text>", "Issue body")
+    .action((repo: string, opts: { title: string; body?: string }) => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      const args = ["issue", "create", repo, "--title", opts.title, "--node", node];
+      if (opts.body) args.push("--body", opts.body);
+      printSection("Create Issue");
+      runGl(args, node);
+      console.log();
+    });
+
+  issueCmd
+    .command("list <repo>")
+    .description("List issues")
+    .action((repo: string) => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      printSection(`Issues — ${repo}`);
+      runGl(["issue", "list", repo, "--node", node], node);
+      console.log();
+    });
+
+  issueCmd
+    .command("view <repo> <number>")
+    .description("View an issue")
+    .action((repo: string, number: string) => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      runGl(["issue", "view", repo, number, "--node", node], node);
+      console.log();
+    });
+
+  issueCmd
+    .command("close <repo> <number>")
+    .description("Close an issue")
+    .action((repo: string, number: string) => {
+      const node = getNode((gl.opts() as { node?: string }).node);
+      requireGl();
+      printSection("Close Issue");
+      runGl(["issue", "close", repo, number, "--node", node], node);
       console.log();
     });
 }

@@ -164,89 +164,117 @@ gitbank did link     # Instructions to link your vault to your DID
 
 ## Gitlawb — Decentralized Git
 
-Commands for the [Gitlawb](https://gitlawb.com) decentralized git network. Every identity is a cryptographic DID. Every push is signed. No accounts, no passwords.
+[Gitlawb](https://gitlawb.com) is a decentralized git network. Every identity is a cryptographic DID. Every push is signed with Ed25519. No accounts, no passwords.
 
-Connects to `https://node.gitlawb.com` by default.
+`gitbank gitlawb` commands delegate to the `gl` CLI — all authentication and signing is handled by `gl` using your local `~/.gitlawb/identity.pem` keypair.
 
-> `gitlawb clone` and `git push` require `git-remote-gitlawb` on PATH. Run `gitbank gitlawb install` for setup instructions.
+---
 
-### Setup
+### Full setup — from zero to a live repo
+
+One command walks you through the entire flow:
 
 ```bash
-gitbank gitlawb install              # Installation instructions (gl + git-remote-gitlawb)
-gitbank gitlawb register             # Register your DID with the node, obtain a UCAN token
-gitbank gitlawb doctor               # Check: gl installed, git-remote-gitlawb, node reachable
+gitbank gitlawb setup --name my-project
+gitbank gitlawb setup --name my-project --description "My first Gitlawb repo"
 ```
 
-### Node & Profile
+**What it does, step by step:**
+
+| Step | Action |
+|---|---|
+| 1 | Check `gl` is installed — prints install command if missing |
+| 2 | Set node URL (`https://node.gitlawb.com`) |
+| 3 | Create Ed25519 DID identity if one doesn't exist |
+| 4 | Register your DID with the node (signs a UCAN token) |
+| 5 | Create the repository |
+| 6 | Clone it locally via DID transport |
+| 7 | Print your profile URL and next steps |
+
+After `setup` completes:
 
 ```bash
-gitbank gitlawb status               # Node status: online, peers, repos, region
-gitbank gitlawb profile              # Your profile URL + trust score
-gitbank gitlawb profile --did <did>  # Look up another DID's profile
-```
-
-### Repositories
-
-```bash
-gitbank gitlawb repos [ownerDid]     # List repos (defaults to your own DID)
-gitbank gitlawb create <name> [desc] # Create a repository on the network
-gitbank gitlawb info <name>          # Repo metadata: owner, branch, clone URL, timestamps
-gitbank gitlawb clone <name> [did]   # Clone via DID transport (requires git-remote-gitlawb)
-```
-
-After cloning, set your DID as the git author so commits carry your identity:
-
-```bash
+cd my-project
 git config user.name  "$(gl identity show)"
 git config user.email "$(gl identity show)@gitlawb"
+
+echo "# my-project" > README.md
+git add . && git commit -m "init"
+git push origin main
 ```
 
-### Pull Requests
+---
+
+### Prerequisites — install gl
+
+All `gitbank gitlawb` commands require `gl` (the Gitlawb CLI) to be installed on your system.
 
 ```bash
-gitbank gitlawb pr list <repo>                                        # List PRs
-gitbank gitlawb pr open <repo> <head> <base> <title> [--body]         # Open a PR
-gitbank gitlawb pr view <repo> <id>                                   # PR details and body
-gitbank gitlawb pr diff <repo> <id>                                   # Unified diff output
-gitbank gitlawb pr review <repo> <id> --status approved [--body]      # Approve
-gitbank gitlawb pr review <repo> <id> --status changes_requested      # Request changes
-gitbank gitlawb pr review <repo> <id> --status comment --body "Note"  # Comment
-gitbank gitlawb pr merge <repo> <id>                                  # Merge a PR
+# Option 1 — curl (macOS / Linux, recommended):
+curl -fsSL https://gitlawb.com/install.sh | sh
+
+# Option 2 — npm:
+npm install -g @gitlawb/gl
+
+# Option 3 — build from source (requires Rust):
+cargo install --git https://github.com/gitlawb/gitlawb gl git-remote-gitlawb
 ```
 
-`--status` accepts: `approved` · `changes_requested` · `comment`
-
-### Issues
+Clone and push also require `git-remote-gitlawb` — included in the curl installer.
 
 ```bash
-gitbank gitlawb issue list <repo>                         # List open issues (default)
-gitbank gitlawb issue create <repo> --title "Bug: ..."    # Create an issue
-gitbank gitlawb issue create <repo> --title "..." --body "Details"
-gitbank gitlawb issue view <repo> <id>                    # Issue details and body
-gitbank gitlawb issue close <repo> <id>                   # Close an issue
+gitbank gitlawb install   # Print full install instructions
+gitbank gitlawb doctor    # Check: gl, git-remote-gitlawb, node reachable, identity
 ```
 
-### Files
+---
+
+### Individual commands
 
 ```bash
-gitbank gitlawb cat <repo> <filepath>              # Read file from default branch
-gitbank gitlawb cat <repo> <filepath> --ref dev    # Read from a specific branch or commit
+# Node
+gitbank gitlawb status              # Node status (peers, repos, region)
+gitbank gitlawb profile             # Your DID + profile URL on gitlawb.com
+
+# Identity
+gitbank gitlawb identity new        # Generate a new Ed25519 keypair and DID
+gitbank gitlawb identity show       # Print your DID
+
+# Registration
+gitbank gitlawb register            # Register DID with node, save UCAN token
+
+# Repos
+gitbank gitlawb repo create <name> [--description]   # Create a repo
+gitbank gitlawb repo list                            # List your repos
+gitbank gitlawb repo info <name>                     # Repo metadata
+gitbank gitlawb repo clone <name> [ownerDid]         # Clone via DID transport
+
+# Pull requests
+gitbank gitlawb pr create <repo> --head <branch> --base <branch> --title "..." [--body]
+gitbank gitlawb pr list   <repo>
+gitbank gitlawb pr view   <repo> <number>
+gitbank gitlawb pr diff   <repo> <number>
+gitbank gitlawb pr review <repo> <number> --status approved|changes_requested|comment [--body]
+gitbank gitlawb pr merge  <repo> <number>
+
+# Issues
+gitbank gitlawb issue create <repo> --title "..." [--body]
+gitbank gitlawb issue list   <repo>
+gitbank gitlawb issue view   <repo> <number>
+gitbank gitlawb issue close  <repo> <number>
 ```
 
 ### Override node URL
 
 ```bash
-gitbank gitlawb --node https://mynode.example.com status
+gitbank gitlawb --node https://mynode.example.com setup --name my-project
 ```
 
-**Environment variables:**
+Or set permanently:
 
-| Variable | Default | Description |
-|---|---|---|
-| `GITLAWB_NODE` | `https://node.gitlawb.com` | Node URL |
-| `GITLAWB_DID` | — | Your DID identifier |
-| `GITLAWB_KEY` | — | Path to identity key file |
+```bash
+export GITLAWB_NODE=https://node.gitlawb.com
+```
 
 ---
 
