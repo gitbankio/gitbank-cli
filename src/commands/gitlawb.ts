@@ -51,20 +51,30 @@ function glCapture(args: string[], node: string): string | null {
 
 function printInstallInstructions(): void {
   console.log();
-  console.log(c.label("  Install the Gitlawb CLI:"));
+  console.log(c.label("  Install the Gitlawb CLI (gl + git-remote-gitlawb):"));
   console.log();
-  console.log("  " + chalk.bold("Option 1 — curl (macOS / Linux):"));
-  console.log("  " + c.accent("curl -fsSL https://gitlawb.com/install.sh | sh"));
+  console.log("  " + chalk.bold("Recommended (macOS / Linux):"));
+  console.log("  " + c.accent("curl -fsSL https://gitlawb.com/install.sh | bash"));
   console.log();
-  console.log("  " + chalk.bold("Option 2 — npm:"));
-  console.log("  " + c.accent("npm install -g @gitlawb/gl"));
+  console.log(c.muted("  Note: must pipe to bash — sh/dash don't support pipefail."));
   console.log();
-  console.log("  " + chalk.bold("Option 3 — build from source (requires Rust):"));
+  console.log("  " + chalk.bold("From source (requires Rust):"));
   console.log("  " + c.accent("cargo install --git https://github.com/gitlawb/gitlawb gl git-remote-gitlawb"));
   console.log();
   console.log(c.muted("  Supports: macOS arm64 · macOS x86_64 · Linux x86_64 · Linux arm64"));
-  console.log(c.muted("  After install, run: gitbank gitlawb setup"));
+  console.log(c.muted("  After install, run: gitbank gitlawb setup --name <repo>"));
   console.log();
+}
+
+/** Convert a DID to short key (strip did:key: prefix). */
+function didShortKey(did: string): string {
+  return did.replace(/^did:key:/, "");
+}
+
+/** Build the HTTP clone URL for a repo (works without git-remote-gitlawb). */
+function httpCloneUrl(node: string, did: string, repo: string): string {
+  const base = node.replace(/\/$/, "");
+  return `${base}/${didShortKey(did)}/${repo}.git`;
 }
 
 function requireGl(): void {
@@ -200,30 +210,47 @@ export function registerGitlawbCommands(program: Command): void {
       // ── Step 6: Clone ───────────────────────────────────────────────────
 
       const did = glCapture(["identity", "show"], node);
+      let cloned = false;
 
-      if (!opts.skipClone) {
+      if (!opts.skipClone && did) {
         step(6, "Clone repository");
-        if (!gitRemoteAvailable()) {
-          console.log(c.warn("  ! git-remote-gitlawb is not installed — cannot clone via DID."));
-          info("Install it first:");
-          console.log("  " + c.accent("curl -fsSL https://gitlawb.com/install.sh | sh"));
+
+        const didUrl = `gitlawb://${did}/${opts.name}`;
+        const httpUrl = httpCloneUrl(node, did, opts.name);
+
+        if (gitRemoteAvailable()) {
+          console.log(c.label("  Clone URL (DID): ") + c.accent(didUrl));
           console.log();
-          info("Then clone manually:");
-          if (did) console.log("  " + c.accent(`git clone "gitlawb://${did}/${opts.name}"`));
-        } else if (did) {
-          const cloneUrl = `gitlawb://${did}/${opts.name}`;
-          console.log(c.label("  Clone URL: ") + c.accent(cloneUrl));
-          console.log();
-          const cloneResult = spawnSync("git", ["clone", cloneUrl], {
+          const r = spawnSync("git", ["clone", didUrl], {
             stdio: "inherit",
             env: { ...process.env, GITLAWB_NODE: node },
           });
           console.log();
-          if (cloneResult.status === 0) {
+          if (r.status === 0) {
             ok(`Cloned to ./${opts.name}`);
+            cloned = true;
           } else {
-            console.log(c.warn("  ! Clone failed. You can clone manually:"));
-            console.log("  " + c.accent(`git clone "${cloneUrl}"`));
+            console.log(c.warn("  ! DID clone failed. Falling back to HTTP..."));
+          }
+        } else {
+          info("git-remote-gitlawb not on PATH — using HTTP clone (works without it).");
+          console.log();
+        }
+
+        if (!cloned) {
+          console.log(c.label("  Clone URL (HTTP): ") + c.accent(httpUrl));
+          console.log();
+          const r = spawnSync("git", ["clone", httpUrl], {
+            stdio: "inherit",
+            env: { ...process.env, GITLAWB_NODE: node },
+          });
+          console.log();
+          if (r.status === 0) {
+            ok(`Cloned to ./${opts.name}`);
+            cloned = true;
+          } else {
+            console.log(c.warn("  ! Clone failed. Try manually:"));
+            console.log("  " + c.accent(`git clone "${httpUrl}"`));
           }
         }
       }
@@ -256,7 +283,8 @@ export function registerGitlawbCommands(program: Command): void {
       }
       console.log("  " + c.muted("echo '# " + opts.name + "' > README.md"));
       console.log("  " + c.muted("git add . && git commit -m 'init'"));
-      console.log("  " + c.muted("git push origin main"));
+      console.log("  " + c.muted("git branch -M main") + c.muted("   # rename default branch if it's 'master'"));
+      console.log("  " + c.muted("git push -u origin main"));
       console.log();
       console.log(c.muted("  Manage with:  gitbank gitlawb repo list"));
       console.log(c.muted("  Open a PR:    gitbank gitlawb pr create " + opts.name + " --head <branch> --base main --title \"...\""));
@@ -418,16 +446,11 @@ export function registerGitlawbCommands(program: Command): void {
 
   repoCmd
     .command("clone <name> [ownerDid]")
-    .description("Clone a repository (uses your DID if ownerDid is not given)")
-    .action((name: string, ownerDid?: string) => {
+    .description("Clone a repository (auto-falls back to HTTP if git-remote-gitlawb is missing)")
+    .option("--http", "Force HTTP clone (skip DID transport even if available)")
+    .action((name: string, ownerDid: string | undefined, opts: { http?: boolean }) => {
       const node = getNode((gl.opts() as { node?: string }).node);
       requireGl();
-
-      if (!gitRemoteAvailable()) {
-        console.log(c.error("  ✗ git-remote-gitlawb is not installed."));
-        console.log(c.muted("  Install: curl -fsSL https://gitlawb.com/install.sh | sh"));
-        process.exit(1);
-      }
 
       const did = ownerDid ?? glCapture(["identity", "show"], node);
       if (!did) {
@@ -435,12 +458,17 @@ export function registerGitlawbCommands(program: Command): void {
         process.exit(1);
       }
 
-      const cloneUrl = `gitlawb://${did}/${name}`;
+      const httpUrl = httpCloneUrl(node, did, name);
+      const didUrl = `gitlawb://${did}/${name}`;
+      const useDid = !opts.http && gitRemoteAvailable();
+      const url = useDid ? didUrl : httpUrl;
+
       printSection("Clone Repo");
-      console.log(c.label("  URL: ") + c.accent(cloneUrl));
+      console.log(c.label("  Transport: ") + (useDid ? c.accent("DID (gitlawb://)") : c.accent("HTTP")));
+      console.log(c.label("  URL:       ") + c.accent(url));
       console.log();
 
-      const result = spawnSync("git", ["clone", cloneUrl], {
+      const result = spawnSync("git", ["clone", url], {
         stdio: "inherit",
         env: { ...process.env, GITLAWB_NODE: node },
       });
@@ -449,12 +477,16 @@ export function registerGitlawbCommands(program: Command): void {
       if (result.status === 0) {
         ok(`Cloned to ./${name}`);
         console.log();
-        console.log(c.label("  Set your DID as git author:"));
+        console.log(c.label("  Next:"));
         console.log("  " + c.accent(`cd ${name}`));
         console.log("  " + c.accent(`git config user.name  "${did}"`));
         console.log("  " + c.accent(`git config user.email "${did}@gitlawb"`));
+        console.log("  " + c.accent("git branch -M main") + c.muted("   # if default is 'master'"));
       } else {
         console.log(c.error("  ✗ Clone failed."));
+        if (useDid) {
+          console.log(c.muted("  Try HTTP: gitbank gitlawb repo clone " + name + " --http"));
+        }
       }
       console.log();
     });

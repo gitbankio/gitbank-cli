@@ -1,6 +1,6 @@
 {
   "name": "gitbank",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "CLI for Gitbank — manage Web3 GitVaults, deposit/withdraw/swap tokens on Base L2, run bounty projects, and interact with Gitlawb decentralized git and AI agents from your terminal.",
   "type": "module",
   "license": "MIT",
