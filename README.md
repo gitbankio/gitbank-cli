@@ -1,8 +1,8 @@
 # gitbank
 
-Terminal CLI for [Gitbank](https://gitbank.io) — Web3 payments and project management built into GitHub on Base L2.
+Terminal CLI for [Gitbank](https://gitbank.io) — Web3 payments and on-chain project management via GitHub on Base L2.
 
-Manage GitVaults, deposit/withdraw/swap tokens, run bounty projects, interact with the [Gitlawb](https://gitlawb.com) decentralized git network, manage DID identity, and connect AI agents via MCP — all from your terminal.
+Manage your GitVault, deposit/withdraw/swap stablecoins, create bounty projects tied to GitHub issues, interact with the [Gitlawb](https://gitlawb.com) decentralized git network, manage DID identity, and connect AI agents via MCP — all from your terminal.
 
 ## Install
 
@@ -17,121 +17,208 @@ Requires **Node.js 18+**.
 ## Quick Start
 
 ```bash
-# Login with GitHub
-gitbank auth login
+gitbank auth login              # Print GitHub OAuth URL
+gitbank auth set-cookie "..."   # Paste cookie from browser (VPS/headless)
+gitbank auth me                 # Confirm who you are
 
-# Check vault balance
-gitbank balance
-
-# Deposit 100 USDC
-gitbank deposit 100 USDC
-
-# List your projects
-gitbank projects list
-
-# Generate a DID identity
-gitbank did new
-
-# Expose 23 tools to Claude via MCP
-gitbank mcp serve
+gitbank balance                 # Check vault balances
+gitbank vault deploy            # Deploy GitVault on Base L2 (one-time)
+gitbank deposit 100 USDC        # Fund your vault
 ```
 
 ---
 
-## Commands
+## Authentication
 
-### Auth
+Gitbank uses **GitHub OAuth**. Session is stored at `~/.gitbank/session.json` (mode 0600).
 
 ```bash
-gitbank auth login        # Start GitHub OAuth (opens browser)
-gitbank auth logout       # Sign out
-gitbank auth me           # Show current user + vault address
+gitbank auth login              # Print OAuth URL + open browser if available
+gitbank auth set-cookie <value> # Manually set cookie (VPS / headless)
+gitbank auth me                 # Show current user and vault address
+gitbank auth logout             # Sign out and clear local session
 ```
 
-### Vault
+### Login on a VPS or headless server
+
+There is no browser on a remote server, so use the manual cookie flow:
+
+1. Open **`https://gitbank.io/api/auth/github`** in your local browser
+2. Complete GitHub login
+3. Press **F12** → tab **Application** → **Cookies** → `https://gitbank.io`
+4. Find row **`connect.sid`** → click it → copy the **Value**
+5. Back on your VPS:
 
 ```bash
-gitbank balance                          # Live vault balances (USDC, WETH, cbBTC)
-gitbank deposit <amount> <token>         # Lock tokens into vault
-gitbank withdraw <amount> <token> <addr> # Withdraw to external address
-gitbank swap <amount> <from> <to>        # Swap via Uniswap v3 on Base L2
-gitbank send <amount> <token> <@user>    # Send to contributor's vault
-gitbank vault deploy                     # Deploy GitVault contract (one-time)
-gitbank vault key                        # Export vault private key
+gitbank auth set-cookie "connect.sid=s%3Axxx..."
+gitbank auth me
 ```
 
-**Supported tokens:** `USDC`, `WETH`, `cbBTC`
+---
 
-### Projects & Bounties
+## Vault
+
+Your GitVault is a smart contract on Base L2 (chainId 8453).
+
+**Supported tokens:** `USDC` · `WETH` · `cbBTC`
 
 ```bash
-gitbank projects list                               # List your projects
-gitbank projects create <name> <repo> <token> <budget>  # Create on-chain project
-gitbank projects show <id>                          # Project details + tasks
+gitbank vault deploy                         # Deploy GitVault contract (one-time)
+gitbank vault key                            # Export execution private key — keep secret!
 
-gitbank projects task add <projectId> <issue> <repo> <githubId> <amount> <token>
-gitbank projects task cancel <projectId> <taskId>
+gitbank balance                              # Live token balances
+
+gitbank deposit <amount> <token>             # Lock tokens into vault
+gitbank withdraw <amount> <token> <address>  # Withdraw to an external wallet
+
+gitbank swap <amount> <tokenIn> <tokenOut>   # Swap via Uniswap v3 on Base L2
+gitbank swap 100 USDC WETH --slippage 100    # Custom slippage in basis points (default: 50)
+
+gitbank send <amount> <token> <recipient>    # Send to another contributor vault (commit-reveal)
 ```
 
-### Gitlawb — Decentralized Git
+---
+
+## Projects & Bounties
+
+On-chain project budgets tied to GitHub repos and issues.
 
 ```bash
-gitbank gitlawb status                  # Node status + peer info
-gitbank gitlawb repos [did]             # List repos by DID owner
-gitbank gitlawb create <name> [desc]    # Create repo on network
-gitbank gitlawb clone <name> [did]      # Clone via DID transport
+gitbank projects list                        # List all your projects
 
-gitbank gitlawb pr list <repo>          # List pull requests
-gitbank gitlawb pr open <repo> <head> <base> <title>  # Open a PR
+# Create a project (flags optional — CLI prompts for missing values)
+gitbank projects create \
+  --name "My Project" \
+  --repo owner/repo \
+  --token USDC \
+  --budget 1000
 
-gitbank gitlawb issues <repo>           # List issues
-gitbank gitlawb cat <repo> <file>       # Read file from repo
+gitbank projects show <projectId>            # Project details and task list
 
-gitbank gitlawb install                 # Install Gitlawb CLI guide
+# Assign a bounty to a GitHub issue
+gitbank projects task add \
+  --project <projectId> \
+  --issue <issueNumber> \
+  --repo owner/repo \
+  --to <contributorGitHubNumericId> \
+  --bounty <amount> \
+  --token USDC
+
+gitbank projects task cancel <projectId> <taskId>   # Cancel task, reclaim bounty
 ```
 
-**Environment variables for Gitlawb:**
+> **`--to` requires the GitHub numeric user ID**, not a username. Find it at:
+> `https://api.github.com/users/<username>` → look for the `id` field.
 
-| Variable | Description |
-|---|---|
-| `GITLAWB_NODE` | Node URL (default: `https://node.gitlawb.com`) |
-| `GITLAWB_DID` | Your DID identifier |
-| `GITLAWB_KEY` | Path to identity key file |
+---
 
-### DID Identity
-
-Ed25519 decentralized identifiers ([did:key](https://w3c-ccg.github.io/did-method-key/) spec), stored at `~/.gitbank/did/identity.json` (mode 0600).
+## Transactions
 
 ```bash
-gitbank did new        # Generate new Ed25519 DID keypair
-gitbank did show       # Show current DID + MCP config snippet
-gitbank did reset      # Delete and regenerate DID
-gitbank did export     # Print shell export commands (GITLAWB_DID, GITLAWB_KEY)
-gitbank did link       # Instructions to link DID to your vault
+gitbank txs                     # Last 20 transactions
+gitbank txs --limit 50          # Custom result count
+gitbank txs --project <id>      # Filter by project
+gitbank txs --offset 20         # Pagination
 ```
 
-### MCP Server — AI Agent Integration
+Transaction types: `deposit` · `withdraw` · `swap` · `send` · `assign bounty` · `payout` · `reclaim` · `create project`
 
-Expose 23 Gitbank tools to Claude, Cursor, Windsurf, or any MCP-compatible AI agent.
+---
+
+## Repos
+
+Lists GitHub repos where the Gitbank GitHub App is installed.
 
 ```bash
-gitbank mcp serve          # Start JSON-RPC 2.0 stdio MCP server
-gitbank mcp tools          # List all 23 available tools
-gitbank mcp config         # Print Claude Desktop config JSON
-gitbank mcp install        # Copy MCP server to ~/.gitbank/mcp-server.mjs
+gitbank repos                            # List connected repos (default)
+gitbank repos list                       # Same
+gitbank repos remove <installationId>    # Remove a GitHub App installation
+```
+
+Install the app at: **https://gitbank.io/app**
+
+---
+
+## Stats & Health
+
+```bash
+gitbank ping        # API health check (no auth required)
+gitbank stats       # Platform stats: total vaults, transactions, projects
+```
+
+---
+
+## DID Identity
+
+Ed25519 decentralized identifiers ([did:key spec](https://w3c-ccg.github.io/did-method-key/)), used with Gitlawb and AI agent workflows. Stored at `~/.gitbank/did/identity.json` (mode 0600).
+
+```bash
+gitbank did new      # Generate new Ed25519 DID keypair
+gitbank did show     # Show current DID + MCP config snippet
+gitbank did reset    # Delete and regenerate DID (irreversible)
+gitbank did export   # Print GITLAWB_DID / GITLAWB_KEY env vars
+gitbank did link     # Instructions to link your vault to your DID
+```
+
+---
+
+## Gitlawb — Decentralized Git
+
+Commands for the [Gitlawb](https://gitlawb.com) decentralized git network. Connects to `https://node.gitlawb.com` by default.
+
+> **Note:** `gitlawb clone` requires `git-remote-gitlawb` installed. Run `gitbank gitlawb install` to see setup instructions.
+
+```bash
+gitbank gitlawb status                  # Node status and peer info
+gitbank gitlawb repos [ownerDid]        # List repos (defaults to your DID)
+gitbank gitlawb create <name> [desc]    # Create a repo on the network
+gitbank gitlawb clone <name> [did]      # Clone repo via DID transport
+gitbank gitlawb install                 # Show Gitlawb CLI install instructions
+
+gitbank gitlawb pr list <repo>                          # List pull requests
+gitbank gitlawb pr open <repo> <head> <base> <title>    # Open a pull request
+gitbank gitlawb pr open myrepo feature main "Fix bug" --body "Details"
+
+gitbank gitlawb issues <repo>                           # List issues
+gitbank gitlawb cat <repo> <filepath>                   # Read file (default branch: main)
+gitbank gitlawb cat myrepo src/index.ts --ref dev       # Read from a specific branch
+
+# Override node for any command:
+gitbank gitlawb --node https://mynode.example.com status
+```
+
+**Gitlawb environment variables:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `GITLAWB_NODE` | `https://node.gitlawb.com` | Node URL |
+| `GITLAWB_DID` | — | Your DID identifier |
+| `GITLAWB_KEY` | — | Path to identity key file |
+
+---
+
+## MCP Server — AI Agent Integration
+
+The CLI ships a complete [Model Context Protocol](https://modelcontextprotocol.io) stdio server with 23 tools for Claude, Cursor, Windsurf, and any MCP-compatible AI agent.
+
+```bash
+gitbank mcp serve     # Start MCP server (stdio transport)
+gitbank mcp tools     # List all 23 tools with their parameters
+gitbank mcp config    # Print claude_desktop_config.json snippet (also saves to ~/.gitbank/)
+gitbank mcp install   # Auto-install into Claude Desktop (if the app is installed)
 ```
 
 **Add to `claude_desktop_config.json`:**
 
-macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
-Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "gitbank": {
-      "command": "gitbank",
-      "args": ["mcp", "serve"],
+      "command": "node",
+      "args": ["/path/to/gitbank", "mcp", "serve"],
       "env": {
         "GITLAWB_DID": "did:key:z6Mk...",
         "GITLAWB_NODE": "https://node.gitlawb.com"
@@ -141,40 +228,56 @@ Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 }
 ```
 
-Or generate the config automatically:
+Or generate the config automatically (path is filled in for you):
 
 ```bash
 gitbank mcp config
 ```
 
-**MCP Tools (23 total):**
+**All 23 MCP tools:**
 
-| Group | Tools |
-|---|---|
-| Auth & Info | `gitbank_ping`, `gitbank_me`, `gitbank_stats` |
-| Vault | `gitbank_balance`, `gitbank_deposit`, `gitbank_withdraw`, `gitbank_swap`, `gitbank_send`, `gitbank_deploy_vault` |
-| Projects | `gitbank_list_projects`, `gitbank_get_project`, `gitbank_create_project`, `gitbank_assign_bounty`, `gitbank_cancel_task`, `gitbank_transactions`, `gitbank_repos` |
-| DID | `gitbank_did_show`, `gitbank_did_new` |
-| Gitlawb | `gitlawb_node_status`, `gitlawb_list_repos`, `gitlawb_create_repo`, `gitlawb_open_pr`, `gitlawb_read_file` |
+| Group | Tool | What it does |
+|---|---|---|
+| Info | `gitbank_ping` | API health check |
+| Info | `gitbank_me` | Current user + vault address |
+| Info | `gitbank_stats` | Platform statistics |
+| Vault | `gitbank_balance` | Live token balances |
+| Vault | `gitbank_deposit` | Lock tokens into vault |
+| Vault | `gitbank_withdraw` | Withdraw to external wallet |
+| Vault | `gitbank_swap` | Swap via Uniswap v3 on Base |
+| Vault | `gitbank_send` | Send to contributor vault |
+| Vault | `gitbank_deploy_vault` | Deploy GitVault contract |
+| Projects | `gitbank_list_projects` | List all projects |
+| Projects | `gitbank_get_project` | Project details + tasks |
+| Projects | `gitbank_create_project` | Create on-chain project |
+| Projects | `gitbank_assign_bounty` | Assign bounty to GitHub issue |
+| Projects | `gitbank_cancel_task` | Cancel task, reclaim bounty |
+| Projects | `gitbank_transactions` | Transaction history |
+| Projects | `gitbank_repos` | Connected GitHub repos |
+| DID | `gitbank_did_show` | Show local DID |
+| DID | `gitbank_did_new` | Generate new DID |
+| Gitlawb | `gitlawb_node_status` | Node status |
+| Gitlawb | `gitlawb_list_repos` | List repos by DID |
+| Gitlawb | `gitlawb_create_repo` | Create decentralized repo |
+| Gitlawb | `gitlawb_open_pr` | Open pull request |
+| Gitlawb | `gitlawb_read_file` | Read file from repo |
 
-### Agent — OpenClaude Integration
+---
 
-Spawn an [OpenClaude](https://github.com/Gitlawb/openclaude) coding agent with full Gitbank context pre-loaded.
+## Agent — OpenClaude Integration
+
+Spawn an AI coding agent with Gitbank MCP tools pre-loaded.
+
+> **Requires:** `npm install -g @gitlawb/openclaude`
 
 ```bash
-gitbank agent run [task]       # Spawn OpenClaude agent on current repo
-gitbank agent setup            # Install openclaude globally
-gitbank agent profile          # Write .claude/gitbank-profile.md to current repo
-gitbank agent info             # Show integration status (openclaude, gitlawb, mcp)
-```
+gitbank agent run                              # Spawn agent in current directory
+gitbank agent run "Fix the auth bug"           # Spawn with a specific task
+gitbank agent run --model claude-3-5-haiku-20241022 "task"
 
-### History & Status
-
-```bash
-gitbank txs              # Transaction history
-gitbank repos            # Connected GitHub repos
-gitbank stats            # Platform stats (vaults, txs, projects)
-gitbank ping             # API health check
+gitbank agent setup                            # Check openclaude + gl install status
+gitbank agent profile                          # Write .openclaude-profile.json in current dir
+gitbank agent info                             # Show openclaude / gitlawb / MCP status
 ```
 
 ---
@@ -182,64 +285,29 @@ gitbank ping             # API health check
 ## Global Options
 
 ```bash
-gitbank --api <url>   # Override API base URL (default: https://gitbank.io)
-gitbank --help        # Show help dashboard
+gitbank --api <url>    # Override API base URL (default: https://gitbank.io)
+gitbank --version      # Show version
+gitbank --help         # Show help
 ```
 
 ---
 
-## Session
-
-Authentication is stored at `~/.gitbank/session.json` (mode 0600). The session cookie is written automatically after `gitbank auth login` completes the GitHub OAuth flow.
+## File Locations
 
 ```
 ~/.gitbank/
-  session.json          # GitHub OAuth session cookie
+  session.json              # GitHub OAuth session cookie  (mode 0600)
+  config.json               # API URL override, if set
   did/
-    identity.json       # Ed25519 DID keypair (private key included)
-  mcp-server.mjs        # MCP server binary (after: gitbank mcp install)
-  claude-mcp-config.json
-```
-
----
-
-## Workflow Example
-
-```bash
-# 1. Authenticate
-gitbank auth login
-
-# 2. Deploy your vault (once)
-gitbank vault deploy
-
-# 3. Fund your vault
-gitbank deposit 1000 USDC
-
-# 4. Create a bounty project
-gitbank projects create "Backend Rewrite" owner/repo USDC 1000
-
-# 5. Assign a bounty to a GitHub issue
-gitbank projects task add 1 42 owner/repo 123456 200 USDC
-#    projectId↑  issue↑  repo↑      githubId↑  amount↑
-
-# 6. Generate your DID for decentralized git
-gitbank did new
-
-# 7. Push to Gitlawb
-gitbank gitlawb create my-project
-git remote add gitlawb $(gitbank gitlawb repos | grep my-project | ...)
-git push gitlawb main
-
-# 8. Connect Claude to your vault
-gitbank mcp config     # Copy output to claude_desktop_config.json
-# → Claude can now deposit, create bounties, manage repos
+    identity.json           # Ed25519 DID keypair          (mode 0600)
+  claude-mcp-config.json    # MCP config snapshot (gitbank mcp config)
 ```
 
 ---
 
 ## SDK
 
-The full TypeScript SDK is available separately:
+Full TypeScript SDK available separately:
 
 ```bash
 npm install @gitbank-agent/sdk
@@ -254,7 +322,6 @@ See [@gitbank-agent/sdk on npm](https://www.npmjs.com/package/@gitbank-agent/sdk
 - [Gitbank](https://gitbank.io) — platform
 - [@gitbank-agent/sdk](https://www.npmjs.com/package/@gitbank-agent/sdk) — TypeScript SDK
 - [Gitlawb](https://gitlawb.com) — decentralized git network
-- [OpenClaude](https://github.com/Gitlawb/openclaude) — open-source coding agent
 - [GitHub](https://github.com/gitbankio/gitbank-cli) — source code
 
 ## License
