@@ -1,24 +1,14 @@
 {
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "target": "es2022",
     "lib": ["es2022"],
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "isolatedModules": true,
     "types": ["node"],
     "noEmit": true,
-    "rootDir": "src",
-    "noImplicitAny": true,
-    "noImplicitThis": true,
-    "noImplicitReturns": true,
-    "noFallthroughCasesInSwitch": true,
-    "strictNullChecks": true,
-    "strictBindCallApply": true,
-    "strictPropertyInitialization": true,
-    "useUnknownInCatchVariables": true,
-    "alwaysStrict": true,
-    "skipLibCheck": true,
-    "noEmitOnError": true
+    "rootDir": "src"
   },
+  "references": [
+    { "path": "../../lib/gitbank-sdk" }
+
+  ],
   "include": ["src"]
 }

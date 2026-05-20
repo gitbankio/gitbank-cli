@@ -24,7 +24,7 @@ function getClient(): GitbankClient {
   return new GitbankClient({
     baseUrl: apiUrl,
     cookie: cookie ?? undefined,
-    onCookieUpdate: (newCookie) => {
+    onCookieUpdate: (newCookie: string) => {
       saveSession(newCookie);
     },
   });
