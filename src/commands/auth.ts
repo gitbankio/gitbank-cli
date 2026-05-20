@@ -4,93 +4,51 @@ import { GitbankClient, GitbankAuthError } from "@gitbank-agent/sdk";
 import { loadSession, saveSession, clearSession } from "../session.js";
 import { c, printKV, printSection } from "../ui/colors.js";
 import { execSync } from "node:child_process";
-import http from "node:http";
-import { URL } from "node:url";
 
-function openBrowser(url: string): void {
+function isHeadless(): boolean {
+  return (
+    !process.env.DISPLAY &&
+    !process.env.WAYLAND_DISPLAY &&
+    process.platform !== "darwin" &&
+    process.platform !== "win32"
+  );
+}
+
+function openBrowser(url: string): boolean {
   try {
     const platform = process.platform;
-    if (platform === "darwin") execSync(`open "${url}"`);
-    else if (platform === "win32") execSync(`start "" "${url}"`);
-    else execSync(`xdg-open "${url}" 2>/dev/null || true`);
-  } catch {
-    // ignore open errors
-  }
-}
-
-async function pollForSession(
-  client: GitbankClient,
-  timeoutMs = 120_000
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  const interval = 2000;
-
-  process.stdout.write(c.label("  Waiting for GitHub OAuth"));
-
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, interval));
-    process.stdout.write(c.accent("."));
-    try {
-      await client.me();
-      const cookie = client.getCookie();
-      if (cookie) {
-        saveSession(cookie);
-        process.stdout.write("\n");
-        return;
-      }
-    } catch (err) {
-      if (!(err instanceof GitbankAuthError)) {
-        process.stdout.write("\n");
-        throw err;
-      }
+    if (platform === "darwin") {
+      execSync(`open "${url}"`);
+      return true;
+    } else if (platform === "win32") {
+      execSync(`start "" "${url}"`);
+      return true;
+    } else if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) {
+      execSync(`xdg-open "${url}" 2>/dev/null`);
+      return true;
     }
+  } catch {
+    // ignore
   }
-  process.stdout.write("\n");
-  throw new Error("OAuth timeout — please try again");
+  return false;
 }
 
-async function loginWithLocalCallback(
-  client: GitbankClient,
-  _apiUrl: string
-): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    const server = http.createServer((req, res) => {
-      if (!req.url) {
-        res.end();
-        return;
-      }
-      const url = new URL(req.url, "http://localhost");
-      const cookie = url.searchParams.get("cookie");
-      if (cookie) {
-        client.setCookie(cookie);
-        saveSession(cookie);
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(
-          `<html><body style="font-family:monospace;background:#0a0a0a;color:#3b82f6;padding:40px">
-            <h2>✓ Gitbank CLI authenticated</h2>
-            <p>You can close this tab and return to your terminal.</p>
-          </body></html>`
-        );
-        server.close();
-        resolve(true);
-      } else {
-        res.writeHead(400);
-        res.end("No cookie");
-        resolve(false);
-      }
-    });
-
-    server.listen(0, "127.0.0.1", () => {
-      resolve(false);
-    });
-
-    server.on("error", () => resolve(false));
-
-    setTimeout(() => {
-      server.close();
-      resolve(false);
-    }, 5000);
-  });
+async function verifyCookieAndPrint(client: GitbankClient): Promise<void> {
+  const user = await client.me();
+  console.log(c.success("  ✓ Authenticated!"));
+  console.log();
+  printKV([
+    { label: "GitHub user", value: c.accent("@" + user.githubLogin) },
+    { label: "GitHub ID", value: c.value(String(user.githubId)) },
+    { label: "Role", value: c.value(user.role) },
+    {
+      label: "Vault",
+      value: user.vaultAddress
+        ? c.hash(user.vaultAddress)
+        : c.warn("Not deployed — run: gitbank vault deploy"),
+    },
+  ]);
+  console.log();
 }
 
 export function registerAuthCommands(
@@ -107,41 +65,77 @@ export function registerAuthCommands(
     .action(async () => {
       const client = getClient();
       const loginUrl = client.getLoginUrl();
+      const headless = isHeadless();
 
       console.log();
       console.log(c.header("  GitHub OAuth Login"));
       console.log(c.label("  ─────────────────────────────────────────────────────────"));
-      console.log(c.label("  Opening browser at:"));
-      console.log("  " + chalk.underline(loginUrl));
+      console.log();
+      console.log(c.label("  Open this URL in your browser to login with GitHub:"));
+      console.log();
+      console.log("  " + chalk.bold.underline(loginUrl));
       console.log();
 
-      openBrowser(loginUrl);
+      if (!headless) {
+        const opened = openBrowser(loginUrl);
+        if (opened) {
+          console.log(c.muted("  Browser opened automatically."));
+          console.log();
+        }
+      }
 
-      console.log(c.label("  If your browser did not open, visit the URL above manually."));
-      console.log(c.label("  Polling for authentication (up to 2 minutes)..."));
-      console.log();
+      if (headless) {
+        console.log(c.warn("  ┌─ Headless / VPS detected ───────────────────────────────┐"));
+        console.log(c.warn("  │                                                          │"));
+        console.log(c.warn("  │  Your browser cannot open automatically on this server.  │"));
+        console.log(c.warn("  │                                                          │"));
+        console.log(c.warn("  │  Steps:                                                  │"));
+        console.log(c.warn("  │  1. Open the URL above in your LOCAL browser              │"));
+        console.log(c.warn("  │  2. Complete GitHub login                                 │"));
+        console.log(c.warn("  │  3. Open browser DevTools (F12)                          │"));
+        console.log(c.warn('  │     Application → Cookies → find "connect.sid"           │'));
+        console.log(c.warn("  │  4. Copy the full cookie value                           │"));
+        console.log(c.warn("  │  5. Run on this VPS:                                     │"));
+        console.log(c.warn("  │                                                          │"));
+        console.log(c.warn('  │     ' + chalk.bold('gitbank auth set-cookie "connect.sid=<value>"') + '      │'));
+        console.log(c.warn("  │                                                          │"));
+        console.log(c.warn("  └──────────────────────────────────────────────────────────┘"));
+        console.log();
+      } else {
+        console.log(c.label("  After completing login in your browser, run:"));
+        console.log();
+        console.log("  " + chalk.bold("gitbank auth me"));
+        console.log();
+        console.log(c.muted("  Or if auth did not persist, use:"));
+        console.log(c.muted('  gitbank auth set-cookie "connect.sid=<value from browser cookies>"'));
+        console.log();
+      }
+    });
+
+  auth
+    .command("set-cookie <cookie>")
+    .description('Manually set session cookie (for VPS/headless — copy from browser DevTools)')
+    .action(async (rawCookie: string) => {
+      const client = getClient();
+
+      let cookie = rawCookie.trim();
+      if (!cookie.startsWith("connect.sid=")) {
+        cookie = `connect.sid=${cookie}`;
+      }
+
+      client.setCookie(cookie);
 
       try {
-        await pollForSession(client, 120_000);
-        const user = await client.me();
-        console.log(c.success("  ✓ Authenticated!"));
-        console.log();
-        printKV([
-          { label: "GitHub user", value: c.accent("@" + user.githubLogin) },
-          { label: "GitHub ID", value: c.value(String(user.githubId)) },
-          { label: "Role", value: c.value(user.role) },
-          {
-            label: "Vault",
-            value: user.vaultAddress
-              ? c.hash(user.vaultAddress)
-              : c.warn("Not deployed — run: gitbank vault deploy"),
-          },
-        ]);
+        await verifyCookieAndPrint(client);
+        saveSession(cookie);
+        console.log(c.success("  ✓ Session saved to ~/.gitbank/session.json"));
         console.log();
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(c.error("  ✗ Login failed: " + msg));
-        process.exit(1);
+        if (err instanceof GitbankAuthError) {
+          console.error(c.error("  ✗ Cookie is invalid or expired — please login again and copy a fresh cookie."));
+          process.exit(1);
+        }
+        throw err;
       }
     });
 
@@ -190,6 +184,7 @@ export function registerAuthCommands(
       } catch (err: unknown) {
         if (err instanceof GitbankAuthError) {
           console.error(c.error("  ✗ " + err.message));
+          console.error(c.muted('  Run: gitbank auth login'));
           process.exit(1);
         }
         throw err;
